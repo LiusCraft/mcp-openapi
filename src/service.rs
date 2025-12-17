@@ -12,13 +12,15 @@ use std::sync::Arc;
 pub struct OpenApiService {
     storage: Arc<ApiStorageManager>,
     http_client: reqwest::Client,
+    enable_management: bool,
 }
 
 impl OpenApiService {
-    pub fn new(storage: Arc<ApiStorageManager>) -> Self {
+    pub fn new(storage: Arc<ApiStorageManager>, enable_management: bool) -> Self {
         Self {
             storage,
             http_client: reqwest::Client::new(),
+            enable_management,
         }
     }
 
@@ -37,7 +39,8 @@ impl OpenApiService {
 
     /// 获取管理工具列表
     fn get_management_tools(&self) -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
+            // 查询类工具 - 总是可用
             Tool::new(
                 "list_apis",
                 "List all registered APIs. Returns a list of all API definitions including their status (enabled/disabled).",
@@ -55,8 +58,54 @@ impl OpenApiService {
                         }
                     },
                     "required": []
-                }).as_object().unwrap().clone(),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
             ),
+            Tool::new(
+                "get_api",
+                "Get detailed information about a specific API by its ID or name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "API ID to get"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "API name to get (used if id is not provided)"
+                        }
+                    },
+                    "required": []
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+            Tool::new(
+                "list_apis_by_tag",
+                "List all APIs that have a specific tag.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag": {
+                            "type": "string",
+                            "description": "Tag to filter by"
+                        }
+                    },
+                    "required": ["tag"]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        ];
+
+        // 修改类工具 - 只在启用管理功能时添加
+        if self.enable_management {
+            tools.extend(vec![
             Tool::new(
                 "add_api",
                 "Add a new API definition. The API will be registered as a new tool that can be called through MCP.",
@@ -190,24 +239,6 @@ impl OpenApiService {
                 }).as_object().unwrap().clone(),
             ),
             Tool::new(
-                "get_api",
-                "Get detailed information about a specific API by its ID or name.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "API ID to get"
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "API name to get (used if id is not provided)"
-                        }
-                    },
-                    "required": []
-                }).as_object().unwrap().clone(),
-            ),
-            Tool::new(
                 "update_api",
                 "Update an existing API definition. Only provided fields will be updated.",
                 serde_json::json!({
@@ -283,21 +314,10 @@ impl OpenApiService {
                     "required": []
                 }).as_object().unwrap().clone(),
             ),
-            Tool::new(
-                "list_apis_by_tag",
-                "List all APIs that have a specific tag.",
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tag": {
-                            "type": "string",
-                            "description": "Tag to filter by"
-                        }
-                    },
-                    "required": ["tag"]
-                }).as_object().unwrap().clone(),
-            ),
-        ]
+            ]);
+        }
+
+        tools
     }
 
     /// 将 API 定义转换为 MCP Tool
@@ -315,20 +335,29 @@ impl OpenApiService {
         name: &str,
         arguments: serde_json::Value,
     ) -> Result<CallToolResult> {
-        // 检查是否是管理工具
         match name {
+            // 查询类工具 - 总是允许
             "list_apis" => self.handle_list_apis(arguments).await,
+            "get_api" => self.handle_get_api(arguments).await,
+            "list_apis_by_tag" => self.handle_list_apis_by_tag(arguments).await,
+
+            // 修改类工具
+            "add_api" | "delete_api" | "enable_api" | "disable_api" | "update_api"
+                if !self.enable_management =>
+            {
+                Err(anyhow::anyhow!(
+                    "Management tool '{}' is disabled. Start without --nomg flag to enable it.",
+                    name
+                ))
+            }
             "add_api" => self.handle_add_api(arguments).await,
             "delete_api" => self.handle_delete_api(arguments).await,
             "enable_api" => self.handle_enable_api(arguments).await,
             "disable_api" => self.handle_disable_api(arguments).await,
-            "get_api" => self.handle_get_api(arguments).await,
             "update_api" => self.handle_update_api(arguments).await,
-            "list_apis_by_tag" => self.handle_list_apis_by_tag(arguments).await,
-            _ => {
-                // 尝试作为动态 API 工具调用
-                self.handle_api_call(name, arguments).await
-            }
+
+            // 动态 API 工具调用
+            _ => self.handle_api_call(name, arguments).await,
         }
     }
 

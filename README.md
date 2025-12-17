@@ -29,6 +29,7 @@ Options:
       --host <HOST>            HTTP 服务器地址 (仅 http 模式) [默认: 127.0.0.1]
   -p, --port <PORT>            HTTP 服务器端口 (仅 http 模式) [默认: 3000]
   -s, --store <STORE>          API 存储文件路径 [环境变量: MCP_OPENAPI_STORE]
+      --nomg                   禁用管理工具 (add_api, delete_api 等)
   -h, --help                   显示帮助信息
   -V, --version                显示版本信息
 ```
@@ -45,8 +46,14 @@ Options:
 # 指定存储文件路径
 ./target/release/mcp-openapi -s /path/to/apis.json
 
+# 禁用管理工具（只保留已注册的 API 工具）
+./target/release/mcp-openapi --nomg
+
 # HTTP 模式 + 自定义端口和存储
 ./target/release/mcp-openapi -t http -p 8080 -s /path/to/apis.json
+
+# 完整示例：HTTP 模式，禁用管理工具
+./target/release/mcp-openapi -t http -p 8080 -s /path/to/apis.json --nomg
 ```
 
 ### 配置 Claude Desktop (stdio 模式)
@@ -68,7 +75,13 @@ Options:
 
 ## 内置工具
 
-### list_apis
+> **注意**: 当使用 `--nomg` 启动时，修改类管理工具（add_api, delete_api, enable_api, disable_api, update_api）将被禁用，但查询类工具（list_apis, get_api, list_apis_by_tag）仍然可用。
+
+### 查询类工具（总是可用）
+
+这些工具即使使用 `--nomg` 启动也可以使用：
+
+#### list_apis
 
 列出所有已注册的 API。
 
@@ -76,7 +89,25 @@ Options:
 - `status` (可选): 筛选状态，可选值: `all`, `enabled`, `disabled`
 - `tag` (可选): 按标签筛选
 
-### add_api
+#### get_api
+
+获取指定 API 的详细信息。
+
+参数：
+- `id` 或 `name`: API ID 或名称
+
+#### list_apis_by_tag
+
+按标签列出所有 API。
+
+参数：
+- `tag` (必需): 要筛选的标签
+
+### 修改类工具（需要管理权限）
+
+这些工具在使用 `--nomg` 启动时将不可用：
+
+#### add_api
 
 添加新的 API 定义。
 
@@ -92,26 +123,35 @@ Options:
 - `headers` (可选): 默认请求头
 - `tags` (可选): 标签列表
 
-### delete_api
+#### delete_api
 
 删除 API。
 
 参数：
 - `id` 或 `name`: API ID 或名称
 
-### enable_api
+#### enable_api
 
 启用已禁用的 API。
 
 参数：
 - `id` 或 `name`: API ID 或名称
 
-### disable_api
+#### disable_api
 
 禁用 API（保留但不显示为工具）。
 
 参数：
 - `id` 或 `name`: API ID 或名称
+
+#### update_api
+
+更新已存在的 API 定义。
+
+参数：
+- `id` 或 `name`: API ID 或名称（用于查找）
+- `new_name` (可选): 新的 API 名称
+- 其他参数与 `add_api` 相同，只更新提供的字段
 
 ## API 定义格式
 

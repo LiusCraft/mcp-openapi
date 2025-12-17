@@ -39,6 +39,10 @@ struct Args {
     /// Path to API storage file
     #[arg(short, long, env = "MCP_OPENAPI_STORE")]
     store: Option<PathBuf>,
+
+    /// Disable management tools (add_api, delete_api, etc.)
+    #[arg(long)]
+    nomg: bool,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -76,8 +80,9 @@ async fn main() -> Result<()> {
     // 创建存储管理器
     let storage = Arc::new(ApiStorageManager::new(storage_path).await?);
 
-    // 创建服务
-    let service = Arc::new(OpenApiService::new(storage));
+    // 创建服务 (当 nomg 为 true 时禁用管理工具)
+    let enable_management = !args.nomg;
+    let service = Arc::new(OpenApiService::new(storage, enable_management));
 
     // 创建 Handler
     let handler = OpenApiHandler::new(service);
