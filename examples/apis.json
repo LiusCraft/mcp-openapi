@@ -31,7 +31,6 @@
                     "enum": ["metric", "imperial", "kelvin"]
                 }
             ],
-            "responses": [],
             "authentication": {
                 "type": "api_key",
                 "header_name": "appid",
@@ -59,7 +58,6 @@
                     "type": "string"
                 }
             ],
-            "responses": [],
             "authentication": {
                 "type": "bearer",
                 "token": "YOUR_BEARER_TOKEN"
@@ -82,24 +80,23 @@
             "parameters": [],
             "request_body": {
                 "content_type": "application/json",
+                "required": true,
+                "description": "Post data including title, content, and tags",
                 "schema": {
+                    "title": {
+                        "type": "string",
+                        "description": "Post title"
+                    },
                     "content": {
-                        "description": "Post content in markdown",
-                        "type": "string"
+                        "type": "string",
+                        "description": "Post content in markdown"
                     },
                     "tags": {
-                        "description": "List of tags",
-                        "type": "array"
-                    },
-                    "title": {
-                        "description": "Post title",
-                        "type": "string"
+                        "type": "array",
+                        "description": "List of tags"
                     }
-                },
-                "required": true,
-                "description": "Post data including title, content, and tags"
+                }
             },
-            "responses": [],
             "authentication": {
                 "type": "bearer",
                 "token": "YOUR_BEARER_TOKEN"
