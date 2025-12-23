@@ -41,7 +41,7 @@ struct Args {
     store: Option<PathBuf>,
 
     /// Disable management tools (add_api, delete_api, etc.)
-    #[arg(long)]
+    #[arg(short, long)]
     nomg: bool,
 }
 
