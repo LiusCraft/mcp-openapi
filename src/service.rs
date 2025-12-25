@@ -1,6 +1,6 @@
 use crate::models::{
-    ApiDefinition, ApiParameter, ApiStatus, Authentication, HttpMethod, ParameterIn, ParameterType,
-    RequestBody,
+    substitute_vars_recursive, ApiDefinition, ApiParameter, ApiStatus, Authentication,
+    HttpMethod, ParameterIn, ParameterType, RequestBody,
 };
 use crate::storage::ApiStorageManager;
 use anyhow::Result;
@@ -101,9 +101,81 @@ impl OpenApiService {
                 .unwrap()
                 .clone(),
             ),
+            // 变量管理工具 - 总是可用
+            Tool::new(
+                "list_vars",
+                "List all variables stored in the MCP OpenAPI server. These variables can be used in API headers and authentication fields using ${VAR_NAME} syntax.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+            Tool::new(
+                "get_var",
+                "Get the value of a specific variable by its name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Variable name to get"
+                        }
+                    },
+                    "required": ["key"]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
         ];
 
-        // 修改类工具 - 只在启用管理功能时添加
+        // 变量修改工具 - 总是可用
+        tools.extend(vec![
+            Tool::new(
+                "set_var",
+                "Set a variable value. Variables can be used in API headers and authentication fields using ${VAR_NAME} syntax.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Variable name"
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "Variable value"
+                        }
+                    },
+                    "required": ["key", "value"]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+            Tool::new(
+                "delete_var",
+                "Delete a variable by its name.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "Variable name to delete"
+                        }
+                    },
+                    "required": ["key"]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        ]);
+
+        // API 修改类工具 - 只在启用管理功能时添加
         if self.enable_management {
             tools.extend(vec![
             Tool::new(
@@ -341,7 +413,13 @@ impl OpenApiService {
             "get_api" => self.handle_get_api(arguments).await,
             "list_apis_by_tag" => self.handle_list_apis_by_tag(arguments).await,
 
-            // 修改类工具
+            // 变量管理工具 - 总是允许
+            "list_vars" => self.handle_list_vars().await,
+            "get_var" => self.handle_get_var(arguments).await,
+            "set_var" => self.handle_set_var(arguments).await,
+            "delete_var" => self.handle_delete_var(arguments).await,
+
+            // API 修改类工具 - 需要启用管理功能
             "add_api" | "delete_api" | "enable_api" | "disable_api" | "update_api"
                 if !self.enable_management =>
             {
@@ -681,10 +759,23 @@ impl OpenApiService {
             return Err(anyhow::anyhow!("API '{}' is disabled", name));
         }
 
+        // 获取存储的变量用于替换
+        let variables = self.storage.get_variables().await;
+
         // 构建请求
         let mut path_params = HashMap::new();
         let mut query_params = Vec::new();
-        let mut headers = api.headers.clone();
+        // 对默认 headers 应用变量替换
+        let mut headers: HashMap<String, String> = api
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    substitute_vars_recursive(v, &variables),
+                )
+            })
+            .collect();
 
         // 处理参数
         for param in &api.parameters {
@@ -760,19 +851,23 @@ impl OpenApiService {
             request = request.header(key, value);
         }
 
-        // 添加认证
+        // 添加认证（对认证信息应用变量替换）
         match &api.authentication {
             Authentication::ApiKey {
                 header_name,
                 api_key,
             } => {
-                request = request.header(header_name, api_key);
+                let resolved_key = substitute_vars_recursive(api_key, &variables);
+                request = request.header(header_name, resolved_key);
             }
             Authentication::Bearer { token } => {
-                request = request.header("Authorization", format!("Bearer {}", token));
+                let resolved_token = substitute_vars_recursive(token, &variables);
+                request = request.header("Authorization", format!("Bearer {}", resolved_token));
             }
             Authentication::Basic { username, password } => {
-                request = request.basic_auth(username, Some(password));
+                let resolved_username = substitute_vars_recursive(username, &variables);
+                let resolved_password = substitute_vars_recursive(password, &variables);
+                request = request.basic_auth(&resolved_username, Some(&resolved_password));
             }
             Authentication::None => {}
         }
@@ -807,12 +902,20 @@ impl OpenApiService {
 
     /// 处理获取单个 API 详情
     async fn handle_get_api(&self, arguments: serde_json::Value) -> Result<CallToolResult> {
-        let api_id = arguments
-            .get("api_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing api_id parameter"))?;
+        let api = if let Some(id) = arguments.get("id").and_then(|v| v.as_str()) {
+            self.storage.get_api(id).await
+        } else if let Some(name) = arguments.get("name").and_then(|v| v.as_str()) {
+            self.storage.get_api_by_name(name).await
+        } else {
+            return Ok(CallToolResult {
+                content: vec![Content::text("Either id or name must be provided".to_string())],
+                is_error: Some(true),
+                meta: None,
+                structured_content: None,
+            });
+        };
 
-        match self.storage.get_api(api_id).await {
+        match api {
             Some(api) => {
                 let api_json = serde_json::to_string_pretty(&api)?;
                 Ok(CallToolResult {
@@ -823,7 +926,7 @@ impl OpenApiService {
                 })
             }
             None => Ok(CallToolResult {
-                content: vec![Content::text(format!("API with id '{}' not found", api_id))],
+                content: vec![Content::text("API not found".to_string())],
                 is_error: Some(true),
                 meta: None,
                 structured_content: None,
@@ -833,78 +936,96 @@ impl OpenApiService {
 
     /// 处理更新 API
     async fn handle_update_api(&self, arguments: serde_json::Value) -> Result<CallToolResult> {
-        let api_id = arguments
-            .get("api_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing api_id parameter"))?;
-
-        // 首先获取现有的 API
-        let existing_api = self.storage.get_api(api_id).await;
-
-        match existing_api {
-            Some(mut api) => {
-                // 更新各个字段（如果提供了新值）
-                if let Some(name) = arguments.get("name").and_then(|v| v.as_str()) {
-                    api.name = name.to_string();
-                }
-                if let Some(description) = arguments.get("description").and_then(|v| v.as_str()) {
-                    api.description = description.to_string();
-                }
-                if let Some(base_url) = arguments.get("base_url").and_then(|v| v.as_str()) {
-                    api.base_url = base_url.to_string();
-                }
-                if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
-                    api.path = path.to_string();
-                }
-                if let Some(method) = arguments.get("method").and_then(|v| v.as_str()) {
-                    api.method = serde_json::from_value(serde_json::json!(method))?;
-                }
-                if let Some(tags) = arguments.get("tags").and_then(|v| v.as_array()) {
-                    api.tags = tags
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                }
-                if let Some(params) = arguments.get("parameters") {
-                    api.parameters = serde_json::from_value(params.clone())?;
-                }
-                if let Some(body) = arguments.get("request_body") {
-                    api.request_body = serde_json::from_value(body.clone())?;
-                }
-                if let Some(auth) = arguments.get("authentication") {
-                    api.authentication = serde_json::from_value(auth.clone())?;
-                }
-                if let Some(headers) = arguments.get("headers").and_then(|v| v.as_object()) {
-                    api.headers = headers
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
-                        .collect();
-                }
-
-                // 更新时间戳
-                api.updated_at = chrono::Utc::now().to_rfc3339();
-
-                // 保存更新
-                match self.storage.update_api(api_id, api).await {
-                    Ok(_) => Ok(CallToolResult {
-                        content: vec![Content::text(format!(
-                            "API '{}' updated successfully",
-                            api_id
-                        ))],
-                        is_error: Some(false),
-                        meta: None,
-                        structured_content: None,
-                    }),
-                    Err(e) => Ok(CallToolResult {
-                        content: vec![Content::text(format!("Failed to update API: {}", e))],
+        // 首先通过 id 或 name 找到 API
+        let (api_id, mut api) = if let Some(id) = arguments.get("id").and_then(|v| v.as_str()) {
+            let api = self.storage.get_api(id).await;
+            match api {
+                Some(a) => (id.to_string(), a),
+                None => {
+                    return Ok(CallToolResult {
+                        content: vec![Content::text(format!("API with id '{}' not found", id))],
                         is_error: Some(true),
                         meta: None,
                         structured_content: None,
-                    }),
+                    })
                 }
             }
-            None => Ok(CallToolResult {
-                content: vec![Content::text(format!("API with id '{}' not found", api_id))],
+        } else if let Some(name) = arguments.get("name").and_then(|v| v.as_str()) {
+            let api = self.storage.get_api_by_name(name).await;
+            match api {
+                Some(a) => (a.id.clone(), a),
+                None => {
+                    return Ok(CallToolResult {
+                        content: vec![Content::text(format!("API with name '{}' not found", name))],
+                        is_error: Some(true),
+                        meta: None,
+                        structured_content: None,
+                    })
+                }
+            }
+        } else {
+            return Ok(CallToolResult {
+                content: vec![Content::text("Either id or name must be provided".to_string())],
+                is_error: Some(true),
+                meta: None,
+                structured_content: None,
+            });
+        };
+
+        // 更新各个字段（如果提供了新值）
+        if let Some(new_name) = arguments.get("new_name").and_then(|v| v.as_str()) {
+            api.name = new_name.to_string();
+        }
+        if let Some(description) = arguments.get("description").and_then(|v| v.as_str()) {
+            api.description = description.to_string();
+        }
+        if let Some(base_url) = arguments.get("base_url").and_then(|v| v.as_str()) {
+            api.base_url = base_url.to_string();
+        }
+        if let Some(path) = arguments.get("path").and_then(|v| v.as_str()) {
+            api.path = path.to_string();
+        }
+        if let Some(method) = arguments.get("method").and_then(|v| v.as_str()) {
+            api.method = serde_json::from_value(serde_json::json!(method))?;
+        }
+        if let Some(tags) = arguments.get("tags").and_then(|v| v.as_array()) {
+            api.tags = tags
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+        }
+        if let Some(params) = arguments.get("parameters") {
+            api.parameters = serde_json::from_value(params.clone())?;
+        }
+        if let Some(body) = arguments.get("request_body") {
+            api.request_body = serde_json::from_value(body.clone())?;
+        }
+        if let Some(auth) = arguments.get("authentication") {
+            api.authentication = serde_json::from_value(auth.clone())?;
+        }
+        if let Some(headers) = arguments.get("headers").and_then(|v| v.as_object()) {
+            api.headers = headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                .collect();
+        }
+
+        // 更新时间戳
+        api.updated_at = chrono::Utc::now().to_rfc3339();
+
+        // 保存更新
+        match self.storage.update_api(&api_id, api).await {
+            Ok(_) => Ok(CallToolResult {
+                content: vec![Content::text(format!(
+                    "API '{}' updated successfully",
+                    api_id
+                ))],
+                is_error: Some(false),
+                meta: None,
+                structured_content: None,
+            }),
+            Err(e) => Ok(CallToolResult {
+                content: vec![Content::text(format!("Failed to update API: {}", e))],
                 is_error: Some(true),
                 meta: None,
                 structured_content: None,
@@ -957,6 +1078,107 @@ impl OpenApiService {
                 meta: None,
                 structured_content: None,
             })
+        }
+    }
+
+    // ========== 变量管理处理方法 ==========
+
+    /// 处理列出所有变量
+    async fn handle_list_vars(&self) -> Result<CallToolResult> {
+        let variables = self.storage.get_variables().await;
+
+        if variables.is_empty() {
+            Ok(CallToolResult {
+                content: vec![Content::text("No variables stored.".to_string())],
+                is_error: Some(false),
+                meta: None,
+                structured_content: None,
+            })
+        } else {
+            let output = variables
+                .iter()
+                .map(|(k, v)| format!("{} = {}", k, v))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            Ok(CallToolResult {
+                content: vec![Content::text(format!("Variables:\n{}", output))],
+                is_error: Some(false),
+                meta: None,
+                structured_content: None,
+            })
+        }
+    }
+
+    /// 处理获取单个变量
+    async fn handle_get_var(&self, arguments: serde_json::Value) -> Result<CallToolResult> {
+        let key = arguments
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing key parameter"))?;
+
+        match self.storage.get_variable(key).await {
+            Some(value) => Ok(CallToolResult {
+                content: vec![Content::text(format!("{} = {}", key, value))],
+                is_error: Some(false),
+                meta: None,
+                structured_content: None,
+            }),
+            None => Ok(CallToolResult {
+                content: vec![Content::text(format!("Variable '{}' not found", key))],
+                is_error: Some(true),
+                meta: None,
+                structured_content: None,
+            }),
+        }
+    }
+
+    /// 处理设置变量
+    async fn handle_set_var(&self, arguments: serde_json::Value) -> Result<CallToolResult> {
+        let key = arguments
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing key parameter"))?;
+        let value = arguments
+            .get("value")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing value parameter"))?;
+
+        self.storage
+            .set_variable(key.to_string(), value.to_string())
+            .await?;
+
+        Ok(CallToolResult {
+            content: vec![Content::text(format!(
+                "Variable '{}' set to '{}'",
+                key, value
+            ))],
+            is_error: Some(false),
+            meta: None,
+            structured_content: None,
+        })
+    }
+
+    /// 处理删除变量
+    async fn handle_delete_var(&self, arguments: serde_json::Value) -> Result<CallToolResult> {
+        let key = arguments
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing key parameter"))?;
+
+        match self.storage.delete_variable(key).await? {
+            true => Ok(CallToolResult {
+                content: vec![Content::text(format!("Variable '{}' deleted", key))],
+                is_error: Some(false),
+                meta: None,
+                structured_content: None,
+            }),
+            false => Ok(CallToolResult {
+                content: vec![Content::text(format!("Variable '{}' not found", key))],
+                is_error: Some(true),
+                meta: None,
+                structured_content: None,
+            }),
         }
     }
 }

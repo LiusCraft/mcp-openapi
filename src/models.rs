@@ -41,21 +41,16 @@ pub enum ParameterIn {
 }
 
 /// 参数类型
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ParameterType {
+    #[default]
     String,
     Integer,
     Number,
     Boolean,
     Array,
     Object,
-}
-
-impl Default for ParameterType {
-    fn default() -> Self {
-        ParameterType::String
-    }
 }
 
 /// API 参数定义
@@ -84,19 +79,14 @@ pub struct ApiParameter {
 }
 
 /// API 状态
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiStatus {
     /// 启用
+    #[default]
     Enabled,
     /// 禁用
     Disabled,
-}
-
-impl Default for ApiStatus {
-    fn default() -> Self {
-        ApiStatus::Enabled
-    }
 }
 
 /// 请求体定义
@@ -134,10 +124,11 @@ pub struct ApiResponse {
 }
 
 /// 认证类型
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Authentication {
     /// 无认证
+    #[default]
     None,
     /// API Key 认证
     ApiKey {
@@ -158,12 +149,6 @@ pub enum Authentication {
         /// 密码
         password: String,
     },
-}
-
-impl Default for Authentication {
-    fn default() -> Self {
-        Authentication::None
-    }
 }
 
 /// API 定义
@@ -344,6 +329,9 @@ pub struct ApiStore {
     pub info: ApiStoreInfo,
     /// API 列表
     pub apis: Vec<ApiDefinition>,
+    /// 变量存储（用于环境变量替换）
+    #[serde(default)]
+    pub variables: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,6 +355,126 @@ impl Default for ApiStore {
                 version: "1.0.0".to_string(),
             },
             apis: Vec::new(),
+            variables: HashMap::new(),
         }
+    }
+}
+
+/// 替换字符串中的变量占位符 ${VAR_NAME}
+///
+/// 支持语法：
+/// - ${VAR_NAME} - 替换为 variables 中 VAR_NAME 的值
+/// - 如果变量不存在，保留原始占位符
+///
+/// # 参数
+/// - `s` - 包含占位符的字符串
+/// - `variables` - 变量名到值的映射
+///
+/// # 示例
+/// ```
+/// let mut vars = std::collections::HashMap::new();
+/// vars.insert("TEST_VAR".to_string(), "hello");
+/// assert_eq!(substitute_vars("prefix_${TEST_VAR}_suffix", &vars), "prefix_hello_suffix");
+/// ```
+pub fn substitute_vars(s: &str, variables: &HashMap<String, String>) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut in_var = false;
+    let mut var_name = String::new();
+
+    while let Some(c) = chars.next() {
+        if !in_var {
+            if c == '$'
+                && let Some(&'{') = chars.peek()
+            {
+                // 开始变量 ${...
+                chars.next(); // 消耗 '{'
+                in_var = true;
+                var_name.clear();
+                continue;
+            }
+            result.push(c);
+        } else if c == '}' {
+            // 变量结束
+            if let Some(value) = variables.get(&var_name) {
+                result.push_str(value);
+            } else {
+                // 变量不存在，保留原始占位符
+                result.push_str("${");
+                result.push_str(&var_name);
+                result.push('}');
+            }
+            in_var = false;
+            var_name.clear();
+        } else {
+            var_name.push(c);
+        }
+    }
+
+    // 处理未闭合的变量（保留原样）
+    if in_var {
+        result.push_str("${");
+        result.push_str(&var_name);
+    }
+
+    result
+}
+
+/// 对字符串进行递归变量替换
+///
+/// 允许变量的值中包含其他变量引用
+pub fn substitute_vars_recursive(s: &str, variables: &HashMap<String, String>) -> String {
+    let mut result = s.to_string();
+    let mut max_iterations = 10; // 防止无限循环
+
+    loop {
+        let new_result = substitute_vars(&result, variables);
+        if new_result == result || max_iterations == 0 {
+            break;
+        }
+        result = new_result;
+        max_iterations -= 1;
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_substitute_vars() {
+        let mut vars = HashMap::new();
+        vars.insert("MCP_TEST_VAR".to_string(), "test_value".to_string());
+        vars.insert("MCP_NUM".to_string(), "123".to_string());
+
+        assert_eq!(substitute_vars("hello", &vars), "hello");
+        assert_eq!(substitute_vars("${MCP_TEST_VAR}", &vars), "test_value");
+        assert_eq!(
+            substitute_vars("prefix_${MCP_TEST_VAR}_suffix", &vars),
+            "prefix_test_value_suffix"
+        );
+        assert_eq!(
+            substitute_vars("${MCP_TEST_VAR}_${MCP_NUM}", &vars),
+            "test_value_123"
+        );
+        assert_eq!(substitute_vars("${NON_EXISTENT}", &vars), "${NON_EXISTENT}");
+        assert_eq!(substitute_vars("$", &vars), "$");
+        assert_eq!(substitute_vars("${", &vars), "${");
+        assert_eq!(substitute_vars("${UNCLOSED", &vars), "${UNCLOSED");
+    }
+
+    #[test]
+    fn test_substitute_vars_recursive() {
+        let mut vars = HashMap::new();
+        vars.insert("MCP_OUTER".to_string(), "${MCP_INNER}".to_string());
+        vars.insert("MCP_INNER".to_string(), "final_value".to_string());
+
+        assert_eq!(
+            substitute_vars_recursive("${MCP_OUTER}", &vars),
+            "final_value"
+        );
     }
 }

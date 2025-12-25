@@ -1,5 +1,6 @@
 use crate::models::{ApiDefinition, ApiStatus, ApiStore};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -189,5 +190,52 @@ impl ApiStorageManager {
             .filter(|api| api.tags.contains(&tag.to_string()))
             .cloned()
             .collect()
+    }
+
+    // ========== 变量管理方法 ==========
+
+    /// 获取所有变量
+    pub async fn get_variables(&self) -> HashMap<String, String> {
+        let store = self.store.read().await;
+        store.variables.clone()
+    }
+
+    /// 获取单个变量
+    pub async fn get_variable(&self, key: &str) -> Option<String> {
+        let store = self.store.read().await;
+        store.variables.get(key).cloned()
+    }
+
+    /// 设置变量
+    pub async fn set_variable(&self, key: String, value: String) -> Result<()> {
+        {
+            let mut store = self.store.write().await;
+            store.variables.insert(key, value);
+        }
+        self.save().await
+    }
+
+    /// 删除变量
+    pub async fn delete_variable(&self, key: &str) -> Result<bool> {
+        let deleted = {
+            let mut store = self.store.write().await;
+            store.variables.remove(key).is_some()
+        };
+        if deleted {
+            self.save().await?;
+        }
+        Ok(deleted)
+    }
+
+    /// 批量设置变量
+    #[allow(dead_code)]
+    pub async fn set_variables(&self, variables: HashMap<String, String>) -> Result<()> {
+        {
+            let mut store = self.store.write().await;
+            for (key, value) in variables {
+                store.variables.insert(key, value);
+            }
+        }
+        self.save().await
     }
 }
