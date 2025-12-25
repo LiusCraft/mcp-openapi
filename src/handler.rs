@@ -68,7 +68,7 @@ impl ServerHandler for OpenApiHandler {
         let name = request.name.as_ref();
         let arguments = request
             .arguments
-            .map(|args| serde_json::Value::Object(args))
+            .map(serde_json::Value::Object)
             .unwrap_or(serde_json::Value::Null);
 
         match self.service.call_tool(name, arguments).await {
