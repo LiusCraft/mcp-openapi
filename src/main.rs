@@ -1,3 +1,4 @@
+mod auth;
 mod handler;
 mod models;
 mod service;
@@ -43,6 +44,10 @@ struct Args {
     /// Disable management tools (add_api, delete_api, etc.)
     #[arg(short, long)]
     nomg: bool,
+
+    /// Bearer token for HTTP authentication (only for http mode)
+    #[arg(short, long, env = "MCP_OPENAPI_TOKEN")]
+    token: Option<String>,
 }
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -92,7 +97,7 @@ async fn main() -> Result<()> {
             run_stdio(handler).await?;
         }
         TransportMode::Http => {
-            run_http(handler, &args.host, args.port).await?;
+            run_http(handler, &args.host, args.port, args.token).await?;
         }
     }
 
@@ -113,9 +118,20 @@ async fn run_stdio(handler: OpenApiHandler) -> Result<()> {
     Ok(())
 }
 
-async fn run_http(handler: OpenApiHandler, host: &str, port: u16) -> Result<()> {
+async fn run_http(
+    handler: OpenApiHandler,
+    host: &str,
+    port: u16,
+    token: Option<String>,
+) -> Result<()> {
     let addr = format!("{}:{}", host, port);
     tracing::info!("Starting Streamable HTTP transport on http://{}", addr);
+
+    if token.is_some() {
+        tracing::info!("Bearer token authentication enabled");
+    } else {
+        tracing::warn!("Bearer token authentication DISABLED - all requests will be accepted");
+    }
 
     let ct = CancellationToken::new();
     let config = StreamableHttpServerConfig {
@@ -127,7 +143,15 @@ async fn run_http(handler: OpenApiHandler, host: &str, port: u16) -> Result<()> 
 
     let service = StreamableHttpService::new(move || Ok(handler.clone()), session_manager, config);
 
-    let app = Router::new().route("/mcp", axum::routing::any_service(service));
+    let auth_state = auth::bearer_auth_middleware(token);
+
+    let app = Router::new()
+        .route("/mcp", axum::routing::any_service(service))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth::auth_middleware,
+        ))
+        .with_state(auth_state);
 
     let listener = TcpListener::bind(&addr).await?;
 
