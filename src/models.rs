@@ -384,9 +384,7 @@ pub fn substitute_vars(s: &str, variables: &HashMap<String, String>) -> String {
 
     while let Some(c) = chars.next() {
         if !in_var {
-            if c == '$'
-                && let Some(&'{') = chars.peek()
-            {
+            if c == '$' && chars.peek() == Some(&'{') {
                 // 开始变量 ${...
                 chars.next(); // 消耗 '{'
                 in_var = true;
