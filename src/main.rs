@@ -46,7 +46,7 @@ struct Args {
     nomg: bool,
 
     /// Bearer token for HTTP authentication (only for http mode)
-    #[arg(short, long, env = "MCP_OPENAPI_TOKEN")]
+    #[arg(long, env = "MCP_OPENAPI_TOKEN")]
     token: Option<String>,
 }
 
