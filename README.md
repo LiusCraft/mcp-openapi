@@ -13,8 +13,43 @@
 
 ## 安装
 
+### 源码编译
+
 ```bash
 cargo build --release
+```
+
+### Docker
+
+```bash
+# 拉取镜像
+docker pull ghcr.io/liuscraft/mcp-openapi:latest
+
+# ARM64 架构（如 Mac Apple Silicon）需要指定平台
+docker pull --platform linux/amd64 ghcr.io/liuscraft/mcp-openapi:latest
+
+# stdio 模式运行
+docker run -i --rm \
+  -v $(pwd)/apis.json:/app/apis.json \
+  -e MCP_OPENAPI_STORE=/app/apis.json \
+  ghcr.io/liuscraft/mcp-openapi:latest
+
+# HTTP 模式运行
+docker run -d --name mcp-openapi \
+  -p 3000:3000 \
+  -v $(pwd)/apis.json:/app/apis.json \
+  -e MCP_OPENAPI_STORE=/app/apis.json \
+  ghcr.io/liuscraft/mcp-openapi:latest \
+  -t http -p 3000
+
+# 禁用管理工具运行（只保留已注册的 API 工具）
+docker run -i --rm \
+  -v $(pwd)/apis.json:/app/apis.json \
+  -e MCP_OPENAPI_STORE=/app/apis.json \
+  ghcr.io/liuscraft/mcp-openapi:latest --nomg
+
+# 从源码构建 Docker 镜像
+docker build -t mcp-openapi:latest .
 ```
 
 ## 使用方法
@@ -29,9 +64,36 @@ Options:
       --host <HOST>            HTTP 服务器地址 (仅 http 模式) [默认: 127.0.0.1]
   -p, --port <PORT>            HTTP 服务器端口 (仅 http 模式) [默认: 3000]
   -s, --store <STORE>          API 存储文件路径 [环境变量: MCP_OPENAPI_STORE]
+      --token <TOKEN>          HTTP 模式的 Bearer 认证令牌 [环境变量: MCP_OPENAPI_TOKEN]
       --nomg                   禁用管理工具 (add_api, delete_api 等)
   -h, --help                   显示帮助信息
   -V, --version                显示版本信息
+```
+
+### 环境变量
+
+| 环境变量 | 对应参数 | 说明 |
+|---------|---------|------|
+| `MCP_OPENAPI_STORE` | `--store` | API 存储文件路径 |
+| `MCP_OPENAPI_TOKEN` | `--token` | HTTP 模式的 Bearer 认证令牌 |
+
+**优先级**：命令行参数 > 环境变量 > 默认值
+
+**使用示例**：
+
+```bash
+# 使用环境变量设置存储文件路径
+export MCP_OPENAPI_STORE=/path/to/apis.json
+mcp-openapi
+
+# 使用环境变量设置认证令牌（HTTP 模式）
+export MCP_OPENAPI_TOKEN=your-secret-token
+mcp-openapi -t http -p 3000
+
+# 同时设置多个环境变量
+export MCP_OPENAPI_STORE=/path/to/apis.json
+export MCP_OPENAPI_TOKEN=your-secret-token
+mcp-openapi -t http -p 3000
 ```
 
 ### 启动服务
@@ -56,9 +118,9 @@ Options:
 ./target/release/mcp-openapi -t http -p 8080 -s /path/to/apis.json --nomg
 ```
 
-### 配置 Claude Desktop (stdio 模式)
+### 配置 Claude Desktop
 
-在 Claude Desktop 配置文件中添加：
+#### 方式一：直接使用二进制文件
 
 ```json
 {
@@ -68,6 +130,24 @@ Options:
       "env": {
         "MCP_OPENAPI_STORE": "/path/to/apis.json"
       }
+    }
+  }
+}
+```
+
+#### 方式二：使用 Docker
+
+```json
+{
+  "mcpServers": {
+    "openapi": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-v", "/path/to/apis.json:/app/apis.json",
+        "-e", "MCP_OPENAPI_STORE=/app/apis.json",
+        "ghcr.io/liuscraft/mcp-openapi:latest"
+      ]
     }
   }
 }
